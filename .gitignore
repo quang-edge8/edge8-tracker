@@ -1,0 +1,12 @@
+# --- Secrets & data: NEVER commit (brief §4, security non-negotiable) ---
+.env
+.env.*
+!.env.example
+keys/
+data/
+
+# --- Node / build ---
+node_modules/
+dist/
+*.log
+npm-debug.log*
