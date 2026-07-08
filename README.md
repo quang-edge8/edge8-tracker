@@ -149,12 +149,26 @@ GitHub App (All repositories) ── webhooks ───────────�
    **transaction-pooler** connection string (port 6543).
 2. **Vercel**: import the GitHub repo → every `git push` deploys (no manual deploys).
    Set env vars: `APP_ID`, `WEBHOOK_SECRET`, `GITHUB_APP_PRIVATE_KEY` (full PEM content),
-   `TRACKER_DB_URL` (the pooler string).
+   `TRACKER_DB_URL` (the **transaction pooler** string, port 6543), `ADMIN_TOKEN` (a long
+   random secret guarding the key-admin API).
 3. **GitHub App**: point the Webhook URL at `https://<app>.vercel.app/api/webhooks/github`,
    set the same `WEBHOOK_SECRET`, install on the org/user with **All repositories**
    (new repos are tracked automatically — no re-setup).
-4. **Issue keys**: `npm run issue-key -- --email someone@company.com` (runs against
-   `TRACKER_DB_URL` when set). The full `e8k_…` key is printed once; send it privately.
+4. **Issue keys** — two ways:
+   - **Locally** (needs `TRACKER_DB_URL`): `npm run issue-key -- --email someone@company.com`.
+   - **Over HTTP after deploy** (no DB access needed) via the admin API, guarded by `ADMIN_TOKEN`:
+     ```bash
+     # create (returns the full key ONCE)
+     curl -X POST https://<app>.vercel.app/api/admin/keys \
+       -H "x-admin-token: $ADMIN_TOKEN" -H "content-type: application/json" \
+       -d '{"email":"someone@company.com"}'
+     # list (no secrets) / revoke
+     curl https://<app>.vercel.app/api/admin/keys -H "x-admin-token: $ADMIN_TOKEN"
+     curl -X DELETE https://<app>.vercel.app/api/admin/keys \
+       -H "x-admin-token: $ADMIN_TOKEN" -H "content-type: application/json" \
+       -d '{"key_id":"e8k_xxxxxxxx"}'
+     ```
+   The full `e8k_…` key is shown once — send it to the engineer privately.
 
 ### Engineer setup (one-time, then forget it)
 ```bash

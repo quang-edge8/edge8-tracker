@@ -151,3 +151,54 @@ export async function handleBeacon(
 export async function handleHealth(): Promise<HandlerResult> {
   return { status: 200, json: { ok: true, backend: db.kind, tables: await db.tables() } };
 }
+
+// --- Admin: manage engineer keys over HTTP (so keys can be issued after deploy,
+// with no DB access). Gated by ADMIN_TOKEN (a high-entropy secret env var). ---
+function adminAuthed(presented: string): boolean {
+  const secret = process.env.ADMIN_TOKEN;
+  if (!secret) return false; // fail closed — no admin token configured, deny all
+  const a = Buffer.from(presented);
+  const b = Buffer.from(secret);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// method GET -> list (no secrets) | POST {email} -> create (returns key once)
+// | DELETE {key_id} -> revoke.
+export async function handleAdminKeys(
+  adminToken: string,
+  method: string,
+  params: any,
+): Promise<HandlerResult> {
+  if (!adminAuthed(adminToken)) return { status: 401, json: { error: "unauthorized" } };
+
+  if (method === "GET") {
+    const keys = await db.all(
+      `SELECT key_id, member, status, issued_at FROM engineer_keys ORDER BY issued_at`,
+    );
+    return { status: 200, json: { keys } };
+  }
+  if (method === "POST") {
+    const email = String(params?.email ?? "").trim();
+    if (!email.includes("@")) return { status: 400, json: { error: "email required" } };
+    const keyId = `e8k_${crypto.randomBytes(4).toString("hex")}`;
+    const full = `${keyId}_${crypto.randomBytes(24).toString("hex")}`;
+    const hash = crypto.createHash("sha256").update(full).digest("hex");
+    await db.run(
+      `INSERT INTO engineer_keys (key_id, key_hash, member, status) VALUES (?,?,?,'active')`,
+      keyId,
+      hash,
+      email,
+    );
+    return {
+      status: 201,
+      json: { key_id: keyId, member: email, key: full, note: "store this key now — it is shown once and not recoverable" },
+    };
+  }
+  if (method === "DELETE") {
+    const keyId = String(params?.key_id ?? "").trim();
+    if (!keyId) return { status: 400, json: { error: "key_id required" } };
+    await db.run(`UPDATE engineer_keys SET status = 'revoked' WHERE key_id = ?`, keyId);
+    return { status: 200, json: { key_id: keyId, status: "revoked" } };
+  }
+  return { status: 405, json: { error: "method not allowed" } };
+}
