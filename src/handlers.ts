@@ -14,6 +14,15 @@ export interface HandlerResult {
   text?: string;
 }
 
+// Compare two secrets in constant time with NO length leak: hash both to a fixed
+// 32 bytes first. (timingSafeEqual requires equal-length inputs, so a raw length
+// guard would reveal the secret's length via an early return.)
+function secretEqual(a: string, b: string): boolean {
+  const ha = crypto.createHash("sha256").update(a).digest();
+  const hb = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
 // --- Webhook: verify signature -> store raw -> parse/mint/pair -> ack fast ---
 export async function handleWebhook(input: {
   id: string;
@@ -34,10 +43,7 @@ export async function handleWebhook(input: {
   }
   const expected =
     "sha256=" + crypto.createHmac("sha256", secret).update(raw).digest("hex");
-  const good =
-    sig.length === expected.length &&
-    crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-  if (!good) return { status: 401, text: "bad signature" };
+  if (!secretEqual(sig, expected)) return { status: 401, text: "bad signature" };
 
   // 2. STORE RAW FIRST — before anything can throw. ON CONFLICT = redelivery-safe.
   const bodyText = raw.toString("utf8");
@@ -79,12 +85,8 @@ async function findActiveKey(presented: string): Promise<any | null> {
     keyId,
   );
   if (!rec) return null;
-  // Constant-time compare (both sides are 64-char sha256 hex) — no early-exit
-  // timing leak on the stored hash.
-  const a = Buffer.from(crypto.createHash("sha256").update(presented).digest("hex"));
-  const b = Buffer.from(rec.key_hash ?? "");
-  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-  return ok ? rec : null;
+  const hash = crypto.createHash("sha256").update(presented).digest("hex");
+  return secretEqual(hash, rec.key_hash ?? "") ? rec : null;
 }
 
 async function logAccessEvent(
@@ -157,9 +159,7 @@ export async function handleHealth(): Promise<HandlerResult> {
 function adminAuthed(presented: string): boolean {
   const secret = process.env.ADMIN_TOKEN;
   if (!secret) return false; // fail closed — no admin token configured, deny all
-  const a = Buffer.from(presented);
-  const b = Buffer.from(secret);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  return secretEqual(presented, secret);
 }
 
 // method GET -> list (no secrets) | POST {email} -> create (returns key once)
