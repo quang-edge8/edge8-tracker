@@ -1,0 +1,10 @@
+# Not needed at runtime on Vercel (functions live in api/ + their src/ imports).
+tests/
+cli/
+docs/
+scripts/
+supabase/
+data/
+keys/
+secret.txt
+*.html
