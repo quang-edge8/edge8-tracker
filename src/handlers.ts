@@ -25,7 +25,13 @@ export async function handleWebhook(input: {
   const { id, evt, sig, raw, headers } = input;
 
   // 1. VERIFY — HMAC-SHA256 of the RAW bytes, constant-time compare.
-  const secret = process.env.WEBHOOK_SECRET ?? "";
+  // Fail CLOSED if the secret is missing: never HMAC with an empty key, or anyone
+  // could forge a valid signature when the env var is unset/misconfigured.
+  const secret = process.env.WEBHOOK_SECRET;
+  if (!secret) {
+    console.error("WEBHOOK_SECRET not configured — rejecting webhook");
+    return { status: 401, text: "bad signature" };
+  }
   const expected =
     "sha256=" + crypto.createHmac("sha256", secret).update(raw).digest("hex");
   const good =
@@ -73,8 +79,12 @@ async function findActiveKey(presented: string): Promise<any | null> {
     keyId,
   );
   if (!rec) return null;
-  const hash = crypto.createHash("sha256").update(presented).digest("hex");
-  return hash === rec.key_hash ? rec : null;
+  // Constant-time compare (both sides are 64-char sha256 hex) — no early-exit
+  // timing leak on the stored hash.
+  const a = Buffer.from(crypto.createHash("sha256").update(presented).digest("hex"));
+  const b = Buffer.from(rec.key_hash ?? "");
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  return ok ? rec : null;
 }
 
 async function logAccessEvent(
