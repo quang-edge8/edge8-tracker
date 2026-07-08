@@ -1,6 +1,7 @@
 import "./env"; // MUST be first — loads .env before anything reads process.env
 import express from "express";
 import {
+  handleAdminKeys,
   handleAppToken,
   handleBeacon,
   handleHealth,
@@ -47,6 +48,16 @@ app.post("/app-token", express.json(), async (req, res) =>
 
 app.post("/beacon", express.json(), async (req, res) =>
   send(res, await handleBeacon(req.header("x-edge8-key") ?? "", req.body)),
+);
+
+app.all("/admin/keys", express.json(), async (req, res) =>
+  send(
+    res,
+    await handleAdminKeys(req.header("x-admin-token") ?? "", req.method, {
+      ...req.query,
+      ...req.body,
+    }),
+  ),
 );
 
 app.listen(PORT, () => {
