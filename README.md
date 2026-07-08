@@ -106,6 +106,77 @@ data/capture.db  SQLite file (gitignored)
 keys/            App private key .pem lives here (gitignored)
 ```
 
+## Phase 2 — the mint engine (implemented)
+
+Phase 2 turns captured events into billable numbers. New modules (all derived, all replayable):
+
+- `src/time.ts` — timestamp normalizer (`toMs`: SQLite `"YYYY-MM-DD HH:MM:SS"` is UTC-no-zone; never `Date.parse` it raw) + `tokensFor` (six-minute tenths, floor 0.1)
+- `src/mint.ts` — attribution (§5.1) + sequential spans (§5.2) + merge carve-out (§5.3) → writes `work_spans`
+- `src/pairing.ts` — spans ↔ PRs (close-instant ordering; reused branches safe), orphan sweep, live merge reconciliation
+- `src/classify.ts` — pure: label → branch prefix → project phase; conflicts raise `ambiguous_class`
+- `src/flags.ts` — `capture_flags` with canonical-JSON `UNIQUE(kind, ref)` dedupe
+- `src/remint.ts` — the reparse twin: clears `work_spans`+`capture_flags` and replays all history
+
+```bash
+npm test           # 30 node:test cases (S1/S2/S7, merge, TTL, floor, force-push, idempotency, pairing, classify, parse H1-H3)
+npm run reparse    # run once after upgrading (H1 changed push_events.pushed_at semantics)
+npm run remint     # replay attribution -> mint -> pairing -> classification over all history
+```
+
+Class rules implemented: labels `bug`/`chore` → maintenance, `feature` → feature; branch prefixes `fix/ hotfix/ chore/` → maintenance, `feat/` → feature; else project phase (`build`→build, `support`/`delivered`→maintenance, `internal`→internal). Conflicting signals keep the phase default and raise `ambiguous_class`.
+
+Documented deviations from the brief (rationale in `docs/plans/phase-2-plan.md`):
+1. Pairing also adopts spans pushed **before** the PR opened (real fixture: branch push precedes PR open) — reused-branch ordering unchanged.
+2. Attribution identity does not expire with the 24h clock TTL (DoD requires `no_clock_start` on stale-beacon pushes, which needs a member); falls back to older access events, then to a single active engineer key.
+3. The live pipeline reconciles the merge carve-out when `pull_request closed` arrives **after** the merge push (real ordering: push 08:04:10, closed 08:04:11) by deleting the wrongly minted span — live converges with `remint`.
+
+## Phase 3 — deploy: Vercel + Supabase (implemented)
+
+Production shape: the same handlers run as **Vercel Node serverless functions** (`api/*`),
+storage moves to **Supabase Postgres** in a dedicated schema `tracker` (an existing shared
+database is safe — the migration only CREATEs inside that schema). Backend selection is
+automatic: set `TRACKER_DB_URL` → Postgres; unset → local SQLite (dev/tests unchanged).
+
+```
+engineer machine ── git pull/push ──► credential helper (~/.edge8) ──► /api/app-token ┐
+GitHub App (All repositories) ── webhooks ──────────────────────────► /api/webhooks/github ├─► Supabase (schema tracker)
+                                                                      /api/beacon /api/health ┘
+```
+
+### Admin runbook (one-time)
+1. **Supabase**: apply `supabase/migrations/0001_tracker.sql` to the shared DB (creates
+   schema `tracker` + 10 tables + RLS deny-all; touches nothing in `public`). Grab the
+   **transaction-pooler** connection string (port 6543).
+2. **Vercel**: import the GitHub repo → every `git push` deploys (no manual deploys).
+   Set env vars: `APP_ID`, `WEBHOOK_SECRET`, `GITHUB_APP_PRIVATE_KEY` (full PEM content),
+   `TRACKER_DB_URL` (the pooler string).
+3. **GitHub App**: point the Webhook URL at `https://<app>.vercel.app/api/webhooks/github`,
+   set the same `WEBHOOK_SECRET`, install on the org/user with **All repositories**
+   (new repos are tracked automatically — no re-setup).
+4. **Issue keys**: `npm run issue-key -- --email someone@company.com` (runs against
+   `TRACKER_DB_URL` when set). The full `e8k_…` key is printed once; send it privately.
+
+### Engineer setup (one-time, then forget it)
+```bash
+npm i -g @edge8/tracker          # or: npm i -g <path/to/cli tarball>
+tracker setup --key e8k_xxxx_yyyy --server https://<app>.vercel.app
+```
+That wires git (global, github.com host-scoped, `useHttpPath` on): every pull/push on a
+tracked repo mints/reuses a 60-minute installation token — **auto-refreshed** because git
+invokes the helper on each operation; cache hits send a `/beacon` heartbeat. Untracked and
+personal repos fall through to the previous credential manager. `tracker uninstall` undoes it.
+
+### Pieces
+| Piece | Where |
+|---|---|
+| Vercel functions | `api/webhooks/github.ts` (raw-body HMAC), `api/app-token.ts`, `api/beacon.ts`, `api/health.ts` |
+| Shared handlers (Express local + Vercel identical) | `src/handlers.ts` |
+| Dual storage backend | `src/db.ts` → `db-sqlite.ts` / `db-pg.ts` (explicit `tracker.` qualification) |
+| Serverless token cache | table `app_tokens` (re-mint only when < 5 min left) |
+| Postgres schema | `supabase/migrations/0001_tracker.sql` |
+| Engineer CLI + credential helper | `cli/` (`tracker setup`, `~/.edge8/helper.mjs`) |
+| Key issuance | `scripts/issue-key.ts` |
+
 ## Phase 2 handoff notes
 
 ### Environment (this dev instance)
